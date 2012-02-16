@@ -42,11 +42,12 @@ start_link() ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init([]) ->
-	{ok, Conn} = amqp:connect([]),
+	{ok, Conn} = amqp:connect_link([]),
 	{ok, Chan} = amqp:open_channel(Conn),
-	{ok, _Q} = amqp:queue(Chan, "demo"),
-	Result = amqp:consume(Chan, "demo"),
-	io:format("consume result: ~p~n", [Result]),
+	{ok, _} = amqp:queue(Chan, "demo"),
+	{ok, _} = amqp:queue(Chan, "rpc"),
+	{ok, _, _} = amqp:consume(Chan, "demo"),
+	{ok, _, _} = amqp:consume(Chan, "rpc"),
 	erlang:monitor(process, Chan),
     {ok, #state{conn = Conn, chan = Chan}}.
 %%--------------------------------------------------------------------
@@ -75,6 +76,24 @@ handle_cast(_Msg, State) ->
 %%                                       {stop, Reason, State}
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
+handle_info({deliver, <<"demo">>, Header, Payload}, State) ->
+	io:format("demo header: ~p~n",[Header]),
+	io:format("demo payload: ~p~n", [Payload]),
+    {noreply, State};
+
+handle_info({deliver, <<"rpc">>, Header, Payload}, #state{chan = Channel} = State) ->
+	io:format("rpc header: ~p~n",[Header]),
+	io:format("rpc payload: ~p~n", [Payload]),
+	ReplyTo = proplists:get_value(reply_to, Header),
+	ReqId = proplists:get_value(correlation_id, Header),
+	if
+	(ReplyTo == undefined) or (ReqId == undefined) ->
+		ignore;
+	true ->
+		amqp:reply(Channel, ReplyTo, ReqId, "reply")
+	end,
+    {noreply, State};
+	
 handle_info(Info, State) ->
 	io:format("unexpected info: ~p~n", [Info]),
     {noreply, State}.

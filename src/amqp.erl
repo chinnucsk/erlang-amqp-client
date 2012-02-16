@@ -15,8 +15,8 @@
 -import(proplists, [get_value/3]).
 
 %%api 
-%TODO: request/3, reply/4,
--export([connect/0, connect/1,
+-export([connect_link/0, connect_link/1,
+		connect/0, connect/1,
 		open_channel/1,
 		%access/2,
 		close_channel/1,
@@ -30,6 +30,7 @@
         unbind/3,
         send/3,
         publish/3, publish/4, publish/5,
+		req/3, reply/4,
         delete/3,
         consume/2, consume/3, 
         fetch/2,
@@ -41,9 +42,22 @@
 -export([consumer_init/3]).
 
 -record(consumer_state, {channel, channel_ref, 
-	consumer, consumer_ref, consumer_tag}).
+	consumer, consumer_ref, consumer_tag,
+	correlation_id = none}).
 
 -define(RPC_TIMEOUT, 3000).
+
+connect_link() ->
+	connect_link([]).
+
+connect_link(Opts) ->
+	case connect(Opts) of
+	{ok, C} -> 
+		link(C),
+		{ok, C};
+	{error, Error} ->
+		{error, Error}
+	end.
 
 %% @spec connect() -> Result
 %%  Result = {ok, pid()}  | {error, Error}  
@@ -99,11 +113,40 @@ teardown(Connection) ->
 %%  Reply = term()
 %%  Error = term() 
 %% @doc rpc request
-%request(Pid, To, Request) ->
-%    call(Pid, {request, To, Request}).
+req(Channel, ReqQ, Request) ->
+	{ok, ReplyQ} = declare_queue(Channel),
+	{ok, ReplyConsumer, _} = consume(Channel, ReplyQ),
+	%TODO: FIX LATER
+	CorrelationId = uuid:v4(),
+	ReplyConsumer ! {rpc, correlation_id, CorrelationId},
+	BasicPublish = #'basic.publish'{routing_key = binary(ReqQ),
+									mandatory = false,
+									immediate = false},
+	Props = #'P_basic'{content_type = <<"application/octet-stream">>,
+                 delivery_mode = 1,
+                 priority = 3,
+                 correlation_id = CorrelationId,
+                 reply_to = ReplyQ},
+    Msg = #amqp_msg{props = Props, payload = binary(Request)},
+    amqp_channel:cast(Channel, BasicPublish, Msg),
+	receive
+	{reply, Reply} -> {reply, Reply}
+	after 
+	4000 -> 
+		ReplyConsumer ! stop,
+		{error, req_timeout}
+	end.
 
-%reply(Pid, To, Id, Reply) ->
-%    call(Pid, {reply, To, Id, Reply}).
+reply(Channel, ReplyQ, ReqId, Reply) ->
+	BasicPublish = #'basic.publish'{routing_key = binary(ReplyQ),
+									mandatory = false,
+									immediate = true},
+    Props = #'P_basic'{content_type = <<"application/octet-stream">>,
+					   delivery_mode = 1,
+					   priority = 3,
+					   correlation_id = binary(ReqId)},
+    Msg = #amqp_msg{props = Props, payload = binary(Reply)},
+    amqp_channel:cast(Channel, BasicPublish, Msg).
 
 %% @spec queue(Channel) -> Result
 %%  Channel = pid() | atom()
@@ -439,7 +482,7 @@ consumer_start(Channel, Queue, Consumer)
 	when is_pid(Channel) and is_pid(Consumer) ->
 	%TODO: no need link? 
 	proc_lib:start(?MODULE, consumer_init, 
-		[Channel, Queue, Consumer], 13000).
+		[Channel, Queue, Consumer], 10000).
 
 consumer_init(Channel, Queue, Consumer) ->
     %% Register a consumer to listen to a queue
@@ -449,40 +492,56 @@ consumer_init(Channel, Queue, Consumer) ->
                                     no_ack = true,
                                     exclusive = false,
                                     nowait = false},
-	Res = amqp_channel:subscribe(Channel, BasicConsume, self()),
-	%io:format("subscribe: ~p~n", [Res]),
-    %% If the registration was sucessful, then consumer will be notified
-    receive
-    #'basic.consume_ok'{consumer_tag = ConsumerTag} ->
-		proc_lib:init_ack({ok, self(), ConsumerTag}),
-		ChannelRef = erlang:monitor(process, Channel),
-		ConsumerRef = erlang:monitor(process, Consumer),
-		ConsumerState = #consumer_state{channel = Channel,
-			channel_ref = ChannelRef, 
-			consumer = Consumer,
-			consumer_ref = ConsumerRef,
-			consumer_tag = ConsumerTag},
-		consumer_loop(ConsumerState);
-	Msg ->
-		error_logger:error_msg("error consume result: ~p~n", [Msg]),
-		proc_lib:init_ack({error, consumer_error})
-    after 10000 ->
-        proc_lib:init_ack({error, consume_timeout})
-    end.
+	case amqp_channel:subscribe(Channel, BasicConsume, self()) of
+    #'basic.consume_ok'{consumer_tag = _Tag} -> %%TODO: WHAT'S THIS??
+		receive
+		#'basic.consume_ok'{consumer_tag = ConsumerTag} ->
+			proc_lib:init_ack({ok, self(), ConsumerTag}),
+			ChannelRef = erlang:monitor(process, Channel),
+			ConsumerRef = erlang:monitor(process, Consumer),
+			ConsumerState = #consumer_state{channel = Channel,
+				channel_ref = ChannelRef, 
+				consumer = Consumer,
+				consumer_ref = ConsumerRef,
+				consumer_tag = ConsumerTag},
+			consumer_loop(ConsumerState);
+		Msg ->
+			error_logger:error_msg("error consume result: ~p~n", [Msg]),
+			proc_lib:init_ack({error, consume_error})
+		after
+			5000 -> proc_lib:init_ack({error, consume_timeout})
+		end;
+	Result ->
+		error_logger:error_msg("error subscribe result: ~p~n", [Result]),
+		proc_lib:init_ack({error, subscribe_error})
+	end.
 
 consumer_loop(#consumer_state{channel = Channel,
-			channel_ref = ChannelRef, 
+			channel_ref = ChannelRef,
 			consumer = Consumer,
 			consumer_ref = ConsumerRef,
-			consumer_tag = ConsumerTag} = ConsumerState) ->
+			consumer_tag = ConsumerTag,
+			correlation_id = RpcCorrelationId} = ConsumerState) ->
 	receive
-	{#'basic.deliver'{consumer_tag = ConsumerTag,
+	{rpc, correlation_id, CorrelationId} ->
+		consumer_loop(ConsumerState#consumer_state{
+			correlation_id = CorrelationId});
+	%rpc reply deliver
+	{#'basic.deliver'{consumer_tag = ConsumerTag},
+		#amqp_msg{props = #'P_basic'{
+				  correlation_id = RpcCorrelationId},
+				  payload = Payload}} ->
+		io:format("rpc reply: ~p~n", [Payload]),
+		basic_cancel(Channel, ConsumerTag),
+		Consumer ! {reply, Payload};
+	%common deliver
+	{#'basic.deliver'{consumer_tag = ConsumerTag, 
 		delivery_tag = _DeliveryTag,
 		redelivered = _Redelivered,
 		exchange = _Exchange,
 		routing_key = RoutingKey},
 		#amqp_msg{props = Properties, payload = Payload}} ->
-
+		io:format("comman deliver: ~p~n", [Payload]),
 		#'P_basic'{content_type = ContentType,
 				  correlation_id = CorrelationId,
 				  reply_to = ReplyTo} = Properties,
@@ -492,7 +551,7 @@ consumer_loop(#consumer_state{channel = Channel,
 		Consumer ! {deliver, RoutingKey, Header, Payload},
 		consumer_loop(ConsumerState);
 	{#'basic.deliver'{consumer_tag = OtherTag}, _Msg} ->
-		error_logger:error_msg("unexpected deliver to ~p,"
+		io:format("unexpected deliver to ~p,"
 			" error tag: ~p~n", [ConsumerTag, OtherTag]),
 		consumer_loop(ConsumerState);
 	{'DOWN', ChannelRef, _Type, _Object, _Info} ->
@@ -502,6 +561,7 @@ consumer_loop(#consumer_state{channel = Channel,
 		basic_cancel(Channel, ConsumerTag),
 		{stop, consumer_shutdown};
 	stop ->
+		basic_cancel(Channel, ConsumerTag),
 		{stop, normal};
 	Msg ->
 		error_logger:error_msg("amqp consumer received "
@@ -522,8 +582,4 @@ basic_properties() ->
   #'P_basic'{content_type = <<"application/octet-stream">>,
              delivery_mode = 1,
              priority = 1}.
-
-cancel_timer(undefined) -> ok;
-
-cancel_timer(Timer) -> erlang:cancel_timer(Timer).
 

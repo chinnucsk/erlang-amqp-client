@@ -18,6 +18,7 @@ ebin/amqp_direct_consumer.beam: src/amqp_direct_consumer.erl include/amqp_client
 ebin/uri_parser.beam: src/uri_parser.erl
 ebin/amqp_channel.beam: src/amqp_channel.erl include/amqp_client.hrl
 ebin/amqp_gen_connection.beam: src/amqp_gen_connection.erl include/amqp_client.hrl
+ebin/uuid.beam: src/uuid.erl
 ebin/amqp_client.beam: src/amqp_client.erl
 ebin/amqp_connection_sup.beam: src/amqp_connection_sup.erl include/amqp_client.hrl
 deps.mk: ../rabbitmq-server/generate_deps
