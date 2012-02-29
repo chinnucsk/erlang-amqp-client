@@ -48,11 +48,11 @@
 -define(RPC_TIMEOUT, 3000).
 
 connect_link() ->
-	connect_link([]).
+	connect_link(broker_opts()).
 
 connect_link(Opts) ->
 	case connect(Opts) of
-	{ok, C} -> 
+	{ok, C} ->
 		link(C),
 		{ok, C};
 	{error, Error} ->
@@ -63,7 +63,7 @@ connect_link(Opts) ->
 %%  Result = {ok, pid()}  | {error, Error}  
 %% @doc connect with default opts
 connect() ->
-	connect([]).
+	connect(broker_opts()).
 
 %% @spec connect(Opts) -> Result
 %%  Opts = [tuple()]
@@ -82,6 +82,12 @@ connect(Opts) when is_list(Opts) ->
 
 connect(Params) ->
     amqp_connection:start(Params).
+
+broker_opts() ->
+	case application:get_env(amqp_client, broker) of
+	{ok, Opts} -> Opts;
+	undefined -> []
+	end.
 
 open_channel(Connection) ->
     amqp_connection:open_channel(Connection).
