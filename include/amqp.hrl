@@ -1,0 +1,3 @@
+
+-record(broker, {connection, channel}).
+
