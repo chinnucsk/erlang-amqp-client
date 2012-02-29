@@ -52,9 +52,9 @@ connect_link() ->
 
 connect_link(Opts) ->
 	case connect(Opts) of
-	{ok, C} ->
+	{ok, Conn} ->
 		link(C),
-		{ok, C};
+		{ok, Conn};
 	{error, Error} ->
 		{error, Error}
 	end.
@@ -106,7 +106,7 @@ open_channel(Connection) ->
 close_channel(Channel) ->
     amqp_channel:close(Channel).
 
-%% @spec stop() -> ok
+%% @spec teardown() -> ok
 %% @doc stop amqp client
 teardown(Connection) ->
     amqp_connection:close(Connection).
