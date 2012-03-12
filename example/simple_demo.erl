@@ -13,7 +13,8 @@
 
 -behavior(gen_server).
 
--export([start_link/0]).
+-export([start_link/0,
+		queue/1]).
 
 -export([init/1,
         handle_call/3,
@@ -31,6 +32,9 @@
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
+queue(Name) ->
+	gen_server:call(?MODULE, {queue, Name}).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -42,6 +46,7 @@ start_link() ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init([]) ->
+	process_flag(trap_exit, true),
 	{ok, Conn} = amqp:connect_link([]),
 	{ok, Chan} = amqp:open_channel(Conn),
 	{ok, _} = amqp:queue(Chan, "demo"),
@@ -59,6 +64,10 @@ init([]) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
+handle_call({queue, Name}, _From, #state{chan = Chan} = State) ->
+	Result = amqp:queue(Chan, Name),
+    {reply, Result, State};
+
 handle_call(_Req, _From, State) ->
     {reply, {error, badreq}, State}.
 %%--------------------------------------------------------------------

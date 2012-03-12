@@ -15,13 +15,14 @@
 %%
 
 %% @private
--module(amqp_sup).
+-module(amqp_client_sup).
 
 -include("amqp_client.hrl").
 
 -behaviour(supervisor2).
 
--export([start_link/0, start_connection_sup/1]).
+-export([start_link/0]).
+
 -export([init/1]).
 
 %%---------------------------------------------------------------------------
@@ -29,16 +30,22 @@
 %%---------------------------------------------------------------------------
 
 start_link() ->
-    supervisor2:start_link({local, ?MODULE}, ?MODULE, []).
-
-start_connection_sup(AmqpParams) ->
-    supervisor2:start_child(?MODULE, [AmqpParams]).
+    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 %%---------------------------------------------------------------------------
 %% supervisor2 callbacks
 %%---------------------------------------------------------------------------
 
 init([]) ->
-    {ok, {{simple_one_for_one_terminate, 0, 1},
-          [{connection_sup, {amqp_connection_sup, start_link, []},
-           temporary, infinity, supervisor, [amqp_connection_sup]}]}}.
+	ReconnPolicy = 
+	case application:get_env(reconn_policy) of
+	{ok, Policy} -> Policy;
+	undefined -> [{interval, 30}]
+	end,
+	Amqp = {amqp, {amqp, start_link, [ReconnPolicy]}, 
+		permanent, 5000, worker, [amqp]},
+	Sup = {amqp_sup, {amqp_sup, start_link, []},
+        permanent, infinity, supervisor, [amqp_sup]},
+    {ok, {{one_for_all, 10, 100}, [Sup, Amqp]}}.
+
+

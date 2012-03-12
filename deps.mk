@@ -14,6 +14,7 @@ ebin/amqp_direct_connection.beam: src/amqp_direct_connection.erl ebin/amqp_gen_c
 ebin/amqp_channel_sup.beam: src/amqp_channel_sup.erl include/amqp_client.hrl
 ebin/amqp_rpc_server.beam: src/amqp_rpc_server.erl include/amqp_client.hrl
 ebin/amqp_channels_manager.beam: src/amqp_channels_manager.erl include/amqp_client.hrl
+ebin/amqp_client_sup.beam: src/amqp_client_sup.erl include/amqp_client.hrl
 ebin/amqp_direct_consumer.beam: src/amqp_direct_consumer.erl include/amqp_client.hrl include/amqp_gen_consumer_spec.hrl ebin/amqp_gen_consumer.beam
 ebin/uri_parser.beam: src/uri_parser.erl
 ebin/amqp_channel.beam: src/amqp_channel.erl include/amqp_client.hrl

@@ -9,8 +9,8 @@
                         amqp_gen_consumer,amqp_main_reader,
                         amqp_network_connection,amqp_rpc_client,
                         amqp_rpc_server,amqp_selective_consumer,amqp_sup,
-                        amqp_uri,uri_parser, amqp]},
-              {registered,[amqp_sup]},
+                        amqp_uri,uri_parser, amqp, amqp_client_sup]},
+              {registered,[amqp_sup, amqp_client_sup]},
               {env,[]},
               {mod,{amqp_client,[]}},
               {applications,[kernel,stdlib]}]}.

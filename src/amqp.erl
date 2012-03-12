@@ -14,9 +14,10 @@
 
 -import(proplists, [get_value/3]).
 
+-export([start_link/1]).
+
 %%api 
--export([connect_link/0, connect_link/1,
-		connect/0, connect/1,
+-export([connect/0, connect/1,
 		open_channel/1,
 		%access/2,
 		close_channel/1,
@@ -45,19 +46,21 @@
 	consumer, consumer_ref, consumer_tag,
 	correlation_id = none}).
 
+-behavior(gen_server).
+
+-export([init/1,
+        handle_call/3,
+        handle_cast/2,
+        handle_info/2,
+        terminate/2,
+        code_change/3]).
+
+-record(state, {interval = 30000, clients}).
+
 -define(RPC_TIMEOUT, 3000).
 
-connect_link() ->
-	connect_link(broker_opts()).
-
-connect_link(Opts) ->
-	case connect(Opts) of
-	{ok, Conn} ->
-		link(C),
-		{ok, Conn};
-	{error, Error} ->
-		{error, Error}
-	end.
+start_link(ReconnPolicy) ->
+	gen_server:start_link({local, ?MODULE}, ?MODULE, [ReconnPolicy], []).
 
 %% @spec connect() -> Result
 %%  Result = {ok, pid()}  | {error, Error}  
@@ -78,16 +81,24 @@ connect(Opts) when is_list(Opts) ->
     Password = get_value(password, Opts, <<"guest">>),
     Params = #amqp_params_network{host = Host, port = Port, 
 		virtual_host = VHost, username = User, password = Password},
-	connect(Params);
+	connect(self(), Params).
 
-connect(Params) ->
-    amqp_connection:start(Params).
+connect(Parent, Params) ->
+	Result = amqp_connection:start(Params),
+    case Result of
+	{ok, Pid} -> manage(Parent, Pid, Params);
+	_ -> ok
+	end,
+	Result.
 
 broker_opts() ->
 	case application:get_env(amqp_client, broker) of
 	{ok, Opts} -> Opts;
 	undefined -> []
 	end.
+
+manage(Client, Conn, Params) when is_pid(Client) and is_pid(Conn) ->
+	gen_server:cast(?MODULE, {manage, Client, Conn, Params}).
 
 open_channel(Connection) ->
     amqp_connection:open_channel(Connection).
@@ -588,4 +599,115 @@ basic_properties() ->
   #'P_basic'{content_type = <<"application/octet-stream">>,
              delivery_mode = 1,
              priority = 1}.
+
+%%====================================================================
+%% gen_server callbacks
+%%====================================================================
+%%--------------------------------------------------------------------
+%% Function: init(Args) -> {ok, State} |
+%%                         {ok, State, Timeout} |
+%%                         ignore               |
+%%                         {stop, Reason}
+%% Description: Initiates the server
+%%--------------------------------------------------------------------
+init([ReconnPolicy]) ->
+	process_flag(trap_exit, true),
+	Interval = proplists:get_value(interval, ReconnPolicy, 30),
+    {ok, #state{interval = Interval*1000, clients=dict:new()}}.
+
+%%--------------------------------------------------------------------
+%% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
+%%                                      {reply, Reply, State, Timeout} |
+%%                                      {noreply, State} |
+%%                                      {noreply, State, Timeout} |
+%%                                      {stop, Reason, Reply, State} |
+%%                                      {stop, Reason, State}
+%% Description: Handling call messages
+%%--------------------------------------------------------------------
+handle_call(clients, _From, #state{clients = Clients} = State) ->
+	{reply, {ok, Clients}, State};
+
+handle_call(Req, _From, State) ->
+    {stop, {error, {badreq, Req}}, State}.
+
+%%--------------------------------------------------------------------
+%% Function: handle_cast(Msg, State) -> {noreply, State} |
+%%                                      {noreply, State, Timeout} |
+%%                                      {stop, Reason, State}
+%% Description: Handling cast messages
+%%--------------------------------------------------------------------
+handle_cast({manage, Client, Conn, Params}, #state{clients = Clients} = State) ->
+	link(Conn),
+	Ref = erlang:monitor(process, Client),	
+	Clients1 = dict:store(Ref, {Client, Conn, Params}, Clients),
+    {noreply, #state{clients = Clients1} = State};
+
+handle_cast(Msg, State) ->
+    {stop, {error, {badmsg, Msg}}, State}.
+
+%%--------------------------------------------------------------------
+%% Function: handle_info(Info, State) -> {noreply, State} |
+%%                                       {noreply, State, Timeout} |
+%%                                       {stop, Reason, State}
+%% Description: Handling all non call/cast messages
+%%--------------------------------------------------------------------
+handle_info({'DOWN', Ref, process, _Obj, _Info}, 
+	#state{clients = Clients} = State) ->
+	case dict:find(Ref, Clients) of
+	{ok, {_Client, Conn, _}} ->
+		case erlang:is_process_alive(Conn) of
+		true ->
+			amqp:teardown(Conn);
+		false ->
+			ignore
+		end,
+		NewClients = dict:erase(Ref, Clients),
+		{noreply, State#state{clients = NewClients}};
+	error ->
+		{noreply, State}
+	end;
+
+handle_info({'EXIT', Pid, Reason}, #state{interval = Interval, clients = ClientDict} = State) ->
+	Items = [Item || {_, {_, ConnPid, _}} = Item 
+		<- dict:to_list(ClientDict), ConnPid == Pid],
+	lists:foldl(fun({Ref, {ClientPid, _, Params}}, Dict) -> 
+		erlang:demonitor(Ref),
+		case Reason of
+		normal -> ok;
+		_ ->
+			ClientPid ! {amqp, disconnected},
+			erlang:send_after(Interval, self(), {reconnect_for, ClientPid, Params})
+		end,
+		dict:erase(Ref, Dict) 
+	end, ClientDict, Items),
+	{noreply, State};
+
+handle_info({reconnect_for, ClientPid, Params}, #state{interval = Interval} = State) ->
+	case amqp:connect(ClientPid, Params) of
+	{ok, ConnPid} -> 
+		ClientPid ! {amqp, reconnected, ConnPid};
+	_Err ->
+		erlang:send_after(Interval, self(), {reconnect_for, ClientPid, Params})
+	end,
+	{noreply, State};
+
+handle_info(Info, State) ->
+    {stop, {error, {badinfo, Info}}, State}.
+
+%%--------------------------------------------------------------------
+%% Function: terminate(Reason, State) -> void()
+%% Description: This function is called by a gen_server when it is about to
+%% terminate. It should be the opposite of Module:init/1 and do any necessary
+%% cleaning up. When it returns, the gen_server terminates with Reason.
+%% The return value is ignored.
+%%--------------------------------------------------------------------
+terminate(_Reason, _State) ->
+    ok.
+
+%%--------------------------------------------------------------------
+%% Func: code_change(OldVsn, State, Extra) -> {ok, NewState}
+%% Description: Convert process state when code is changed
+%%--------------------------------------------------------------------
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
 

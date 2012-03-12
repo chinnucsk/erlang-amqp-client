@@ -20,6 +20,7 @@
 -behaviour(application).
 
 -export([start/0]).
+
 -export([start/2, stop/1]).
 
 %%---------------------------------------------------------------------------
@@ -34,7 +35,8 @@ start() ->
 %%---------------------------------------------------------------------------
 
 start(_StartType, _StartArgs) ->
-    amqp_sup:start_link().
+    amqp_client_sup:start_link().
 
 stop(_State) ->
     ok.
+
