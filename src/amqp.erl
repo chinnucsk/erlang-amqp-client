@@ -640,7 +640,7 @@ handle_cast({manage, Client, Conn, Params}, #state{clients = Clients} = State) -
 	link(Conn),
 	Ref = erlang:monitor(process, Client),	
 	Clients1 = dict:store(Ref, {Client, Conn, Params}, Clients),
-    {noreply, #state{clients = Clients1} = State};
+    {noreply, State#state{clients = Clients1}};
 
 handle_cast(Msg, State) ->
     {stop, {error, {badmsg, Msg}}, State}.
