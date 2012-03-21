@@ -14,7 +14,7 @@
 
 -import(proplists, [get_value/3]).
 
--export([start_link/1]).
+-export([start_link/1, clients/0]).
 
 %%api 
 -export([connect/0, connect/1,
@@ -61,6 +61,9 @@
 
 start_link(ReconnPolicy) ->
 	gen_server:start_link({local, ?MODULE}, ?MODULE, [ReconnPolicy], []).
+
+clients() ->
+	gen_server:call(?MODULE, clients).
 
 %% @spec connect() -> Result
 %%  Result = {ok, pid()}  | {error, Error}  
@@ -363,7 +366,7 @@ basic_send(Channel, Queue, Payload) ->
 					mandatory = false,
 					immediate = false},
     Msg = #amqp_msg{props = basic_properties(),
-		payload = binary(Payload)},
+	payload = binary(Payload)},
     amqp_channel:cast(Channel, BasicPublish, Msg).
 
 %% @spec publish(Pid, Exchange, Payload) -> Result
@@ -558,7 +561,7 @@ consumer_loop(#consumer_state{channel = Channel,
 		exchange = _Exchange,
 		routing_key = RoutingKey},
 		#amqp_msg{props = Properties, payload = Payload}} ->
-		io:format("comman deliver: ~p~n", [Payload]),
+		%io:format("comman deliver: ~p~n", [Payload]),
 		#'P_basic'{content_type = ContentType,
 				  correlation_id = CorrelationId,
 				  reply_to = ReplyTo} = Properties,
@@ -625,7 +628,7 @@ init([ReconnPolicy]) ->
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
 handle_call(clients, _From, #state{clients = Clients} = State) ->
-	{reply, {ok, Clients}, State};
+	{reply, {ok, dict:to_list(Clients)}, State};
 
 handle_call(Req, _From, State) ->
     {stop, {error, {badreq, Req}}, State}.
@@ -670,6 +673,7 @@ handle_info({'DOWN', Ref, process, _Obj, _Info},
 handle_info({'EXIT', Pid, Reason}, #state{interval = Interval, clients = ClientDict} = State) ->
 	Items = [Item || {_, {_, ConnPid, _}} = Item 
 		<- dict:to_list(ClientDict), ConnPid == Pid],
+	NewClientDict =
 	lists:foldl(fun({Ref, {ClientPid, _, Params}}, Dict) -> 
 		erlang:demonitor(Ref),
 		case Reason of
@@ -680,10 +684,10 @@ handle_info({'EXIT', Pid, Reason}, #state{interval = Interval, clients = ClientD
 		end,
 		dict:erase(Ref, Dict) 
 	end, ClientDict, Items),
-	{noreply, State};
+	{noreply, State#state{clients = NewClientDict}};
 
 handle_info({reconnect_for, ClientPid, Params}, #state{interval = Interval} = State) ->
-	case amqp:connect(ClientPid, Params) of
+	case connect(ClientPid, Params) of
 	{ok, ConnPid} -> 
 		ClientPid ! {amqp, reconnected, ConnPid};
 	_Err ->
