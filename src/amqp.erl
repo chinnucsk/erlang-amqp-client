@@ -79,7 +79,7 @@ connect(Opts) when is_list(Opts) ->
     Host = get_value(host, Opts, "localhost"),
     Port = get_value(port, Opts, 5672),
     VHost = get_value(vhost, Opts, <<"/">>),
-    %Realm = get_value(realm, Opts, <<"/">>),
+	error_logger:info_msg("vhost: ~p~n", [VHost]),
     User = get_value(user, Opts, <<"guest">>),
     Password = get_value(password, Opts, <<"guest">>),
     Params = #amqp_params_network{host = Host, port = Port, 
